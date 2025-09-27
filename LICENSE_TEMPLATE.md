@@ -1,0 +1,36 @@
+# Standard Dual License Template
+
+Use this exact license for all open source projects:
+
+```
+Dual License
+
+Copyright (c) 2024
+
+This software is dual-licensed:
+
+## Open Source License
+
+Permission is hereby granted, free of charge, to any person or organization with annual gross revenue under $100,000 USD obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Commercial License
+
+For organizations with annual gross revenue of $100,000 USD or more, a commercial license is required. Please contact us for licensing terms and pricing.
+
+Contact: [licensing@your-domain.com]
+
+## Contributing
+
+By contributing to this project, you agree that your contributions will be licensed under the same dual license terms as the project.
+```
+
+## Key Features:
+- **$100K revenue threshold** - optimal balance between accessibility and monetization
+- **Dual licensing** - free for small organizations, paid for larger ones
+- **MIT-style permissions** for open source users
+- **Clear commercial terms** for enterprise usage
+- **Contributor agreement** to maintain licensing consistency

@@ -1,0 +1,812 @@
+'use client';
+
+import React, { useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Slider } from '@/components/ui/slider';
+import { 
+  SemanticSearchSuggestions, 
+  MockEmbeddingProvider,
+  OpenAIEmbeddingProvider,
+  SearchSuggestion
+} from '@/lib/semantic-search-suggestions';
+import { SqliteContractRepository } from '@/lib/repositories/sqlite-contract-repository';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import DollarAmountFilter from './dollar-amount-filter';
+import AgencyFilterModal from './agency-filter-modal';
+import { 
+  Search, 
+  Filter, 
+  X, 
+  DollarSign,
+  Building2,
+  Calendar,
+  RotateCcw,
+  Settings2,
+  Bookmark,
+  BookmarkPlus,
+  ChevronDown,
+  ChevronUp,
+  List,
+  CheckCircle
+} from 'lucide-react';
+// Custom debounce hook
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = React.useState<T>(value);
+  
+  React.useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+    
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+  
+  return debouncedValue;
+}
+import {
+  selectCurrentFilters,
+  selectActiveSearch,
+  selectAvailableAgencies,
+  selectActiveFilterCount,
+  setActiveSearch,
+  updateFilters,
+  clearFilters,
+  removeFilter,
+  addAgencyFilter,
+  removeAgencyFilter,
+  setAvailableAgencies
+} from '@/lib/store/search-slice';
+import { selectAwardAmountRange } from '@/lib/store';
+import { getSearchSummary } from '@/lib/utils/search-utils';
+
+interface FilterBarProps {
+  totalResults?: number;
+  totalUnfilteredResults?: number;
+  onFiltersChange?: (filters: any) => void;
+  className?: string;
+}
+
+const FilterBar: React.FC<FilterBarProps> = ({
+  totalResults = 0,
+  totalUnfilteredResults = 0,
+  onFiltersChange,
+  className = ""
+}) => {
+  const dispatch = useDispatch();
+  const currentFilters = useSelector(selectCurrentFilters);
+  const activeSearch = useSelector(selectActiveSearch);
+  const availableAgencies = useSelector(selectAvailableAgencies);
+  const filterCount = useSelector(selectActiveFilterCount);
+  const awardAmountRange = useSelector(selectAwardAmountRange);
+
+  const [searchInput, setSearchInput] = useState(activeSearch);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [showAgencyModal, setShowAgencyModal] = useState(false);
+  const [showSaveSearch, setShowSaveSearch] = useState(false);
+  const [searchName, setSearchName] = useState('');
+  const [pageSize, setPageSize] = useState(100);
+  const [showPageSizeSettings, setShowPageSizeSettings] = useState(false);
+  const [awardFilterEnabled, setAwardFilterEnabled] = useState(false);
+  const [searchMode, setSearchMode] = useState<'exact' | 'semantic'>('exact');
+  
+  // Semantic suggestions state
+  const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionEngine, setSuggestionEngine] = useState<SemanticSearchSuggestions | null>(null);
+  const [engineInitialized, setEngineInitialized] = useState(false);
+  
+  // Progress tracking for indexing
+  const [indexingProgress, setIndexingProgress] = useState<{
+    step: string;
+    progress: number;
+    total: number;
+    isIndexing: boolean;
+    showProgress: boolean;
+    expandProgress: boolean;
+    logs: string[];
+  }>({ 
+    step: '', 
+    progress: 0, 
+    total: 0, 
+    isIndexing: false, 
+    showProgress: false,
+    expandProgress: false,
+    logs: []
+  });
+  
+  const debouncedSearch = useDebounce(searchInput, 500);
+  const debouncedSuggestionQuery = useDebounce(searchInput, 800); // Longer delay for suggestions
+
+  // Initialize suggestion engine on mount
+  React.useEffect(() => {
+    async function initEngine() {
+      if (suggestionEngine || engineInitialized) return;
+      
+      try {
+        // Start progress tracking
+        setIndexingProgress(prev => ({
+          ...prev, 
+          isIndexing: true,
+          showProgress: true,
+          step: '🚀 Initializing semantic search...',
+          logs: ['Starting semantic search initialization']
+        }));
+        
+        setEngineInitialized(true);
+        
+        // Use mock provider to avoid API key requirement
+        setIndexingProgress(prev => ({
+          ...prev,
+          step: '🧠 Creating embedding provider...',
+          logs: [...prev.logs, 'Setting up mock embedding provider (no API key needed)']
+        }));
+        
+        const engine = new SemanticSearchSuggestions({
+          embeddingProvider: new MockEmbeddingProvider(384),
+          minSimilarityScore: 0.6, // Lower threshold for more suggestions
+          maxSuggestions: 6,
+          minTermFrequency: 2
+        });
+        
+        // Load contracts
+        setIndexingProgress(prev => ({
+          ...prev,
+          step: '📚 Loading contracts from database...',
+          logs: [...prev.logs, 'Querying SQLite database for all contracts']
+        }));
+        
+        const repository = new SqliteContractRepository();
+        const contracts = await repository.getAllContracts();
+        
+        if (contracts.length > 0) {
+          setIndexingProgress(prev => ({
+            ...prev,
+            step: `📊 Indexing ${contracts.length.toLocaleString()} contracts...`,
+            total: contracts.length,
+            progress: 0,
+            logs: [
+              ...prev.logs, 
+              `Found ${contracts.length.toLocaleString()} contracts to index`,
+              'Creating embeddings for each contract (title, description, agency, etc.)'
+            ]
+          }));
+          
+          // Index with progress updates
+          await engine.indexData(contracts, {
+            textFields: ['title', 'description', 'agency', 'office', 'naicsCode', 'naicsDescription'],
+            idField: 'id'
+          });
+          
+          setIndexingProgress(prev => ({
+            ...prev,
+            step: '✅ Semantic search ready!',
+            progress: contracts.length,
+            logs: [
+              ...prev.logs,
+              `Successfully indexed ${contracts.length.toLocaleString()} contracts`,
+              'Smart search suggestions are now available'
+            ]
+          }));
+          
+          setSuggestionEngine(engine);
+          
+          // Auto-hide progress after 4 seconds
+          setTimeout(() => {
+            setIndexingProgress(prev => ({ ...prev, isIndexing: false }));
+          }, 4000);
+          
+        } else {
+          setIndexingProgress(prev => ({
+            ...prev,
+            step: '⚠️ No contracts found',
+            isIndexing: false,
+            logs: [...prev.logs, 'Database appears to be empty - suggestions disabled']
+          }));
+        }
+      } catch (error) {
+        setIndexingProgress(prev => ({
+          ...prev,
+          step: '❌ Indexing failed',
+          isIndexing: false,
+          logs: [...prev.logs, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`]
+        }));
+        console.error('Failed to initialize suggestion engine:', error);
+      }
+    }
+    
+    initEngine();
+  }, [suggestionEngine, engineInitialized]);
+  
+  // Get suggestions when user types (debounced)
+  React.useEffect(() => {
+    async function getSuggestions() {
+      if (!debouncedSuggestionQuery.trim() || !suggestionEngine) {
+        setSuggestions([]);
+        return;
+      }
+      
+      try {
+        setSuggestionsLoading(true);
+        const results = await suggestionEngine.getSuggestions(debouncedSuggestionQuery.trim());
+        setSuggestions(results);
+      } catch (error) {
+        console.error('Error getting suggestions:', error);
+        setSuggestions([]);
+      } finally {
+        setSuggestionsLoading(false);
+      }
+    }
+    
+    getSuggestions();
+  }, [debouncedSuggestionQuery, suggestionEngine]);
+
+  // Update search when debounced value changes
+  React.useEffect(() => {
+    if (debouncedSearch !== activeSearch) {
+      dispatch(setActiveSearch(debouncedSearch));
+      // Also update search mode in filters
+      dispatch(updateFilters({ searchMode }));
+    }
+  }, [debouncedSearch, dispatch, searchMode]);
+
+  // Sync with external activeSearch changes (but not when user is typing)
+  React.useEffect(() => {
+    if (activeSearch !== searchInput && document.activeElement !== document.querySelector('input[type="text"]')) {
+      setSearchInput(activeSearch);
+    }
+  }, [activeSearch]);
+
+  // Dynamic dollar amount range from actual data
+  const defaultMin = awardAmountRange?.min || 0;
+  const defaultMax = awardAmountRange?.max || 100000000;
+  const dollarRange: [number, number] = [
+    currentFilters.minAwardAmount || defaultMin,
+    currentFilters.maxAwardAmount || defaultMax
+  ];
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchInput(e.target.value);
+  };
+
+  const handleDollarAmountChange = (value: [number, number]) => {
+    if (!awardFilterEnabled) return;
+    
+    const updatedFilters = {
+      minAwardAmount: value[0] > defaultMin ? value[0] : undefined,
+      maxAwardAmount: value[1] < defaultMax ? value[1] : undefined
+    };
+    dispatch(updateFilters(updatedFilters));
+  };
+
+  const handleAwardFilterToggle = (enabled: boolean) => {
+    setAwardFilterEnabled(enabled);
+    if (!enabled) {
+      // Clear award amount filters when disabled
+      dispatch(updateFilters({
+        minAwardAmount: undefined,
+        maxAwardAmount: undefined
+      }));
+    }
+  };
+
+  const handleAgencyFilterApply = (agencies: string[]) => {
+    const updatedFilters = {
+      agencies: agencies.length > 0 ? agencies : undefined
+    };
+    dispatch(updateFilters(updatedFilters));
+  };
+
+  const handleRemoveAgency = (agency: string) => {
+    dispatch(removeAgencyFilter(agency));
+  };
+
+  const handleClearSearch = () => {
+    setSearchInput('');
+    dispatch(setActiveSearch(''));
+    setSuggestions([]); // Clear suggestions when search is cleared
+  };
+  
+  // Add a suggestion as OR to current search
+  const addSuggestionToSearch = (suggestion: string) => {
+    const currentTerms = searchInput.trim() ? searchInput.split(' OR ').map(t => t.trim()) : [];
+    if (!currentTerms.includes(suggestion)) {
+      const newSearch = currentTerms.length > 0 
+        ? `${currentTerms.join(' OR ')} OR ${suggestion}`
+        : suggestion;
+      setSearchInput(newSearch);
+      setSuggestions([]); // Clear suggestions after adding one
+    }
+  };
+  };
+
+  const handleClearAllFilters = () => {
+    setSearchInput('');
+    dispatch(setActiveSearch(''));
+    dispatch(clearFilters());
+  };
+
+  const handleSaveSearch = () => {
+    if (!searchName.trim()) {
+      setSearchName(`Search: ${new Date().toLocaleDateString()}`);
+    }
+    
+    const searchToSave = {
+      name: searchName.trim() || `Search: ${new Date().toLocaleDateString()}`,
+      keywords: activeSearch || undefined,
+      agencies: currentFilters.agencies,
+      minAwardAmount: currentFilters.minAwardAmount,
+      maxAwardAmount: currentFilters.maxAwardAmount,
+      status: currentFilters.status,
+      isActive: true
+    };
+    
+    // TODO: When user auth is implemented, save per user
+    // For now, save to localStorage as fallback
+    const savedSearches = JSON.parse(localStorage.getItem('samx-saved-searches') || '[]');
+    const newSearch = {
+      ...searchToSave,
+      id: Date.now().toString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      userId: 'default-user' // Placeholder for future user system
+    };
+    
+    savedSearches.push(newSearch);
+    localStorage.setItem('samx-saved-searches', JSON.stringify(savedSearches));
+    
+    setShowSaveSearch(false);
+    setSearchName('');
+    
+    // Show success message
+    console.log('✅ Search saved successfully:', newSearch.name);
+  };
+
+  const handlePageSizeChange = (newSize: number[]) => {
+    const size = newSize[0];
+    setPageSize(size);
+    // TODO: Trigger API call with new page size
+    // For now, we'll need to integrate this with the dashboard
+    console.log('📊 Page size changed to:', size);
+  };
+
+  const selectedAgencies = currentFilters.agencies || [];
+  const hasActiveFilters = filterCount > 0 || searchInput.trim().length > 0;
+
+  return (
+    <div className={`space-y-4 ${className}`}>
+      {/* Indexing Progress */}
+      {indexingProgress.showProgress && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                {indexingProgress.isIndexing ? (
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                ) : (
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                )}
+                <span className="text-sm font-medium text-blue-900">
+                  {indexingProgress.step}
+                </span>
+                {indexingProgress.total > 0 && indexingProgress.isIndexing && (
+                  <Badge variant="secondary" className="text-xs">
+                    {((indexingProgress.progress / indexingProgress.total) * 100).toFixed(0)}%
+                  </Badge>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setIndexingProgress(prev => ({ ...prev, expandProgress: !prev.expandProgress }))}
+                className="text-xs text-blue-700 hover:text-blue-800"
+              >
+                {indexingProgress.expandProgress ? (
+                  <><ChevronUp className="h-3 w-3 mr-1" />Hide details</>
+                ) : (
+                  <><ChevronDown className="h-3 w-3 mr-1" />Show details</>
+                )}
+              </Button>
+            </div>
+            
+            {/* Progress bar */}
+            {indexingProgress.total > 0 && indexingProgress.isIndexing && (
+              <div className="mt-2 w-full bg-blue-100 rounded-full h-1.5">
+                <div 
+                  className="bg-blue-600 h-1.5 rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${(indexingProgress.progress / indexingProgress.total) * 100}%` }}
+                ></div>
+              </div>
+            )}
+            
+            {/* Expandable details */}
+            {indexingProgress.expandProgress && (
+              <div className="mt-3 space-y-1">
+                {indexingProgress.logs.map((log, index) => (
+                  <div key={index} className="text-xs text-blue-700 flex items-center space-x-1">
+                    <span className="w-1 h-1 bg-blue-400 rounded-full flex-shrink-0"></span>
+                    <span>{log}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {!indexingProgress.isIndexing && (
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-xs text-blue-700">
+                  Type in the search box to see smart suggestions
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIndexingProgress(prev => ({ ...prev, showProgress: false }))}
+                  className="text-xs text-blue-600 hover:text-blue-700"
+                >
+                  Dismiss
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      
+      {/* Main Search Bar */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center space-x-3">
+            {/* Search Input */}
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder={`Search all contract fields${searchMode === 'semantic' ? ' (with related terms)' : ''}...`}
+                value={searchInput}
+                onChange={handleSearchChange}
+                className="pl-10 pr-10"
+              />
+              {searchInput.trim() && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleClearSearch}
+                  className="absolute right-1 top-1/2 transform -translate-y-1/2 h-6 w-6 p-0"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+
+            {/* Minimalistic Filter Toggle */}
+            <Button
+              variant={showAdvancedFilters ? "default" : "outline"}
+              onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+              className="relative"
+            >
+              <Filter className="h-4 w-4" />
+              {filterCount > 0 && (
+                <Badge variant="secondary" className="absolute -top-2 -right-2 h-5 w-5 rounded-full p-0 text-xs">
+                  {filterCount}
+                </Badge>
+              )}
+            </Button>
+
+            {/* Save Search - Show when there are active filters/search */}
+            {hasActiveFilters && (
+              <Button
+                variant="ghost"
+                onClick={() => setShowSaveSearch(true)}
+                size="sm"
+                title="Save this search"
+              >
+                <BookmarkPlus className="h-4 w-4" />
+              </Button>
+            )}
+
+            {/* Clear All - Only show when expanded or filters active */}
+            {hasActiveFilters && showAdvancedFilters && (
+              <Button
+                variant="ghost"
+                onClick={handleClearAllFilters}
+                size="sm"
+              >
+                <RotateCcw className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+          
+          {/* Semantic Suggestions */}
+          {suggestions.length > 0 && searchInput.trim() && (
+            <div className="mt-3 flex flex-wrap gap-2 px-4 pb-4">
+              <span className="text-xs text-muted-foreground self-center">💡 Try adding:</span>
+              {suggestions.map((suggestion) => (
+                <Button
+                  key={suggestion.term}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => addSuggestionToSearch(suggestion.term)}
+                  className="h-6 px-2 text-xs hover:bg-blue-50 border-blue-200"
+                >
+                  <span className="text-blue-600 mr-1">+</span>
+                  {suggestion.term}
+                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">
+                    {suggestion.frequency}
+                  </Badge>
+                </Button>
+              ))}
+              {suggestionsLoading && (
+                <div className="text-xs text-muted-foreground self-center">Loading suggestions...</div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Active Filter Tags */}
+      {hasActiveFilters && (
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-sm text-muted-foreground">Active filters:</span>
+          
+          {searchInput.trim() && (
+            <Badge variant="default" className="flex items-center space-x-1">
+              <Search className="h-3 w-3" />
+              <span>"{searchInput.trim()}"</span>
+              {searchMode === 'semantic' && (
+                <span className="text-xs opacity-75">(semantic)</span>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearSearch}
+                className="h-4 w-4 p-0 ml-1"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </Badge>
+          )}
+
+          {selectedAgencies.map(agency => (
+            <Badge key={agency} variant="secondary" className="flex items-center space-x-1">
+              <Building2 className="h-3 w-3" />
+              <span>{agency}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleRemoveAgency(agency)}
+                className="h-4 w-4 p-0 ml-1"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </Badge>
+          ))}
+
+          {(currentFilters.minAwardAmount || currentFilters.maxAwardAmount) && (
+            <Badge variant="secondary" className="flex items-center space-x-1">
+              <DollarSign className="h-3 w-3" />
+              <span>
+                ${(currentFilters.minAwardAmount || defaultMin).toLocaleString()} - 
+                ${(currentFilters.maxAwardAmount || defaultMax).toLocaleString()}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  dispatch(removeFilter('minAwardAmount'));
+                  dispatch(removeFilter('maxAwardAmount'));
+                }}
+                className="h-4 w-4 p-0 ml-1"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </Badge>
+          )}
+        </div>
+      )}
+
+      {/* Advanced Filters */}
+      {showAdvancedFilters && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Dollar Amount Filter */}
+              <DollarAmountFilter
+                value={dollarRange}
+                enabled={awardFilterEnabled}
+                onValueChange={handleDollarAmountChange}
+                onEnabledChange={handleAwardFilterToggle}
+                minValue={defaultMin}
+                maxValue={defaultMax}
+              />
+
+              {/* Agency Filter */}
+              <Card className="cursor-pointer" onClick={() => setShowAgencyModal(true)}>
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center space-x-2">
+                      <Building2 className="h-4 w-4" />
+                      <span className="text-sm font-medium">Agencies</span>
+                    </div>
+                    <Badge variant="outline">
+                      {selectedAgencies.length || 'All'}
+                    </Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {selectedAgencies.length === 0 
+                      ? 'All agencies included'
+                      : `${selectedAgencies.length} selected`
+                    }
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full mt-2"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAgencyModal(true);
+                    }}
+                  >
+                    <Settings2 className="h-4 w-4 mr-1" />
+                    Configure
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* Search Mode Toggle */}
+              <Card>
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center space-x-2">
+                      <Search className="h-4 w-4" />
+                      <span className="text-sm font-medium">Search Mode</span>
+                    </div>
+                    <Badge variant={searchMode === 'semantic' ? 'default' : 'outline'}>
+                      {searchMode}
+                    </Badge>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="radio"
+                        id="exact-search"
+                        name="searchMode"
+                        value="exact"
+                        checked={searchMode === 'exact'}
+                        onChange={() => setSearchMode('exact')}
+                        className="h-4 w-4"
+                      />
+                      <label htmlFor="exact-search" className="text-sm">
+                        Exact Match
+                      </label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="radio"
+                        id="semantic-search"
+                        name="searchMode"
+                        value="semantic"
+                        checked={searchMode === 'semantic'}
+                        onChange={() => setSearchMode('semantic')}
+                        className="h-4 w-4"
+                      />
+                      <label htmlFor="semantic-search" className="text-sm">
+                        Semantic Search
+                      </label>
+                    </div>
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-2">
+                    {searchMode === 'exact' 
+                      ? 'Search for exact word matches in all contract fields' 
+                      : 'Expand search with related terms and synonyms (e.g., "IT" finds "Information Technology")'}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Results Summary */}
+      {totalResults >= 0 && (
+        <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <div className="space-y-1">
+            <span>{getSearchSummary(totalResults, searchInput, filterCount)}</span>
+            {totalUnfilteredResults > 0 && totalResults !== totalUnfilteredResults && (
+              <div className="text-xs">
+                Found {totalResults.toLocaleString()} of {totalUnfilteredResults.toLocaleString()} total contracts
+                ({Math.round((totalResults/totalUnfilteredResults)*100)}% match)
+                {filterCount > 0 && ` • ${filterCount} filter${filterCount !== 1 ? 's' : ''} active`}
+              </div>
+            )}
+          </div>
+          {totalResults > 0 && searchInput.trim() && (
+            <span>Sorted by relevance</span>
+          )}
+        </div>
+      )}
+
+      {/* Agency Filter Modal */}
+      <AgencyFilterModal
+        isOpen={showAgencyModal}
+        onClose={() => setShowAgencyModal(false)}
+        availableAgencies={availableAgencies}
+        selectedAgencies={selectedAgencies}
+        onSelectionChange={() => {}} // Handled in onApply
+        onApply={handleAgencyFilterApply}
+      />
+
+      {/* Save Search Modal */}
+      <Dialog open={showSaveSearch} onOpenChange={setShowSaveSearch}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <Bookmark className="h-5 w-5" />
+              <span>Save Search</span>
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm font-medium mb-2 block">Search Name</label>
+              <Input
+                type="text"
+                placeholder={`Search: ${new Date().toLocaleDateString()}`}
+                value={searchName}
+                onChange={(e) => setSearchName(e.target.value)}
+                className="w-full"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <label className="text-sm font-medium">What will be saved:</label>
+              <div className="text-xs text-muted-foreground space-y-1">
+                {activeSearch && (
+                  <div className="flex items-center space-x-2">
+                    <Search className="h-3 w-3" />
+                    <span>Search: "{activeSearch}"</span>
+                  </div>
+                )}
+                {selectedAgencies.length > 0 && (
+                  <div className="flex items-center space-x-2">
+                    <Building2 className="h-3 w-3" />
+                    <span>Agencies: {selectedAgencies.length} selected</span>
+                  </div>
+                )}
+                {(currentFilters.minAwardAmount || currentFilters.maxAwardAmount) && (
+                  <div className="flex items-center space-x-2">
+                    <DollarSign className="h-3 w-3" />
+                    <span>Award range: ${(currentFilters.minAwardAmount || defaultMin).toLocaleString()} - ${(currentFilters.maxAwardAmount || defaultMax).toLocaleString()}</span>
+                  </div>
+                )}
+                <div className="text-xs text-muted-foreground mt-2">
+                  ℹ️ Future: Will be saved per user when authentication is added
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSaveSearch(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveSearch}>
+              <BookmarkPlus className="h-4 w-4 mr-2" />
+              Save Search
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default FilterBar;
